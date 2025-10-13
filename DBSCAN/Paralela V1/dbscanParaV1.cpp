@@ -2,15 +2,11 @@
 #include <cmath>
 #include <fstream>
 #include <string>
-#include <vector>
 #include <cstdlib>
 #include <omp.h>
 
 // Estados (compatibles con scikit-learn)
-enum {
-    SIN_CLASIFICAR = -99,
-    RUIDO          = -1
-};
+enum { SIN_CLASIFICAR = -99, RUIDO = -1 };
 
 struct Punto { double x, y; };
 
@@ -19,7 +15,92 @@ inline double distancia2(const Punto& a, const Punto& b) {
     return dx*dx + dy*dy;
 }
 
-// ---- Lectura CSV simple x,y ----
+// ============================
+// Vecinos dentro de eps (igual que serial)
+// ============================
+int buscar_vecinos(Punto puntos[], int n, int idx, double eps2, int out[]) {
+    int c = 0;
+    for (int j = 0; j < n; ++j) {
+        double dx = puntos[idx].x - puntos[j].x;
+        double dy = puntos[idx].y - puntos[j].y;
+        if (dx*dx + dy*dy <= eps2)
+            out[c++] = j;
+    }
+    return c;
+}
+
+// ============================
+// Expansión de clúster (igual que serial)
+// ============================
+int expandir_cluster(Punto puntos[], int n, int idxCore, int idCluster,
+                     double eps2, int minPts, int etiquetas[]) {
+    int* vecinos = new int[n];
+    int* cola    = new int[n];
+    char* enCola = new char[n](); // inicializado en 0
+
+    int numVecinos = buscar_vecinos(puntos, n, idxCore, eps2, vecinos);
+    if (numVecinos < minPts) {
+        etiquetas[idxCore] = RUIDO;
+        delete[] vecinos; delete[] cola; delete[] enCola;
+        return 0;
+    }
+
+    etiquetas[idxCore] = idCluster;
+
+    int inicio = 0, fin = 0;
+    for (int i = 0; i < numVecinos; ++i) {
+        int q = vecinos[i];
+        if (etiquetas[q] == SIN_CLASIFICAR || etiquetas[q] == RUIDO) {
+            etiquetas[q] = idCluster;
+            if (!enCola[q]) { cola[fin++] = q; enCola[q] = 1; }
+        }
+    }
+
+    int* vecinos2 = new int[n];
+    while (inicio < fin) {
+        int p = cola[inicio++];
+        int m = buscar_vecinos(puntos, n, p, eps2, vecinos2);
+        if (m >= minPts) {
+            for (int k = 0; k < m; ++k) {
+                int q = vecinos2[k];
+                if (etiquetas[q] == SIN_CLASIFICAR || etiquetas[q] == RUIDO) {
+                    etiquetas[q] = idCluster;
+                    if (!enCola[q]) { cola[fin++] = q; enCola[q] = 1; }
+                }
+            }
+        }
+    }
+
+    delete[] vecinos; delete[] vecinos2; delete[] cola; delete[] enCola;
+    return 1;
+}
+
+// ============================
+// DBSCAN paralelo (solo el bucle externo se paraleliza)
+// ============================
+int dbscan(Punto puntos[], int n, double eps, int minPts, int etiquetas[]) {
+    for (int i = 0; i < n; ++i) etiquetas[i] = SIN_CLASIFICAR;
+    double eps2 = eps * eps;
+    int idCluster = 0;
+
+    // Paralelizamos el recorrido de los puntos candidatos
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            for (int i = 0; i < n; ++i) {
+                if (etiquetas[i] != SIN_CLASIFICAR) continue;
+                if (expandir_cluster(puntos, n, i, idCluster, eps2, minPts, etiquetas))
+                    ++idCluster;
+            }
+        }
+    }
+    return idCluster;
+}
+
+// ============================
+// Lectura CSV (igual que serial)
+// ============================
 bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
     std::ifstream in(ruta);
     if (!in.is_open()) return false;
@@ -39,65 +120,20 @@ bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
     while (std::getline(in, line)) {
         if (line.empty()) continue;
         for (char& ch : line) if (ch == ',') ch = ' ';
-        if (std::sscanf(line.c_str(), "%lf %lf", &x, &y) == 2) puntos[i++] = {x,y};
+        if (std::sscanf(line.c_str(), "%lf %lf", &x, &y) == 2)
+            puntos[i++] = {x,y};
     }
     in.close(); N = i;
     return (N > 0);
 }
 
-// Expansión de clúster usando vecindad precomputada
-int expandir_cluster_con_vecinos(const std::vector<std::vector<int>>& vecinos,
-                                 int idxCore, int idCluster, int minPts,
-                                 int etiquetas[])
-{
-    const auto& Vcore = vecinos[idxCore];
-    if ((int)Vcore.size() < minPts) {
-        etiquetas[idxCore] = RUIDO; // no es núcleo
-        return 0;
-    }
-
-    etiquetas[idxCore] = idCluster;
-
-    // Semillas (BFS)
-    const int n = (int)vecinos.size();
-    std::vector<int> cola;  cola.reserve(n);
-    std::vector<char> enCola(n, 0);
-
-    // Encolar vecinos del núcleo
-    for (int q : Vcore) {
-        if (etiquetas[q] == SIN_CLASIFICAR || etiquetas[q] == RUIDO) {
-            etiquetas[q] = idCluster;
-            if (!enCola[q]) { cola.push_back(q); enCola[q] = 1; }
-        }
-    }
-
-    // BFS
-    for (size_t pos = 0; pos < cola.size(); ++pos) {
-        int p = cola[pos];
-        const auto& Vp = vecinos[p];
-        if ((int)Vp.size() >= minPts) {
-            for (int q : Vp) {
-                if (etiquetas[q] == SIN_CLASIFICAR || etiquetas[q] == RUIDO) {
-                    etiquetas[q] = idCluster;
-                    if (!enCola[q]) { cola.push_back(q); enCola[q] = 1; }
-                }
-            }
-        }
-    }
-    return 1;
-}
-
+// ============================
+// MAIN
+// ============================
 int main(int argc, char** argv) {
-    // Args:
-    //  argv[1] -> archivo CSV (opcional, default "4000_data.csv")
-    //  argv[2] -> numero de hilos (opcional, default = omp_get_max_threads())
     const char* archivo = (argc > 1) ? argv[1] : "4000_data.csv";
-    int num_hilos = (argc > 2) ? std::atoi(argv[2]) : 0;
-    if (num_hilos > 0) omp_set_num_threads(num_hilos);
-
-    // Parámetros DBSCAN (ajústalos si quieres desde CLI también)
-    double eps   = 0.03;
-    int    minPts = 10;
+    int num_hilos = (argc > 2) ? std::atoi(argv[2]) : omp_get_max_threads();
+    omp_set_num_threads(num_hilos);
 
     Punto* P = nullptr; int N = 0;
     if (!leer_csv_xy(archivo, P, N)) {
@@ -105,61 +141,29 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (num_hilos <= 0) num_hilos = omp_get_max_threads();
+    double eps = 0.03;
+    int minPts = 10;
+
     std::printf("Usando %d hilos (OpenMP)\n", num_hilos);
     std::printf("N = %d, eps = %.5f, minPts = %d\n", N, eps, minPts);
 
-    // ==============================
-    // 1) Precomputar vecindades O(n^2) en paralelo
-    //    "Matriz indivisible": construimos TODAS las listas de vecinos
-    // ==============================
-    double eps2 = eps * eps;
-    std::vector<std::vector<int>> vecinos(N);
+    int* etiquetas = new int[N];
+    int k = dbscan(P, N, eps, minPts, etiquetas);
+    std::printf("Se encontraron %d clústeres\n", k);
 
-    // Cada i escribe SOLO en vecinos[i], por lo que no hay carreras
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < N; ++i) {
-        // Reserva aproximada para evitar realocaciones (opcional)
-        // vecinos[i].reserve(64);
-        for (int j = 0; j < N; ++j) {
-            double dx = P[i].x - P[j].x;
-            double dy = P[i].y - P[j].y;
-            if (dx*dx + dy*dy <= eps2) {
-                vecinos[i].push_back(j);
-            }
-        }
-    }
-
-    // ==============================
-    // 2) DBSCAN (expansión secuencial sobre vecindad precomputada)
-    // ==============================
-    std::vector<int> etiquetas(N, SIN_CLASIFICAR);
-    int idCluster = 0;
-
-    for (int i = 0; i < N; ++i) {
-        if (etiquetas[i] != SINCLASIFICAR) continue;
-        if (expandir_cluster_con_vecinos(vecinos, i, idCluster, minPts, etiquetas.data())) {
-            ++idCluster;
-        }
-    }
-
-    std::printf("Se encontraron %d clústeres\n", idCluster);
-
-    // ==============================
-    // 3) Guardar resultados
-    // ==============================
-    std::string salida = std::to_string(N) + "_results.csv";
-    std::FILE* f = std::fopen(salida.c_str(), "w");
+    std::FILE* f = std::fopen("resultados.csv", "w");
     if (!f) {
         std::perror("No se pudo crear el archivo de salida");
-        delete[] P;
+        delete[] etiquetas; delete[] P;
         return 1;
     }
     for (int i = 0; i < N; ++i)
         std::fprintf(f, "%.6f,%.6f,%d\n", P[i].x, P[i].y, etiquetas[i]);
     std::fclose(f);
-    std::printf("Resultados guardados en %s\n", salida.c_str());
 
+    std::printf("Resultados guardados en resultados.csv\n");
+
+    delete[] etiquetas;
     delete[] P;
     return 0;
 }
