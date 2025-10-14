@@ -117,7 +117,7 @@ bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
 
 // ======= BATCH MAIN =======
 int main() {
-    std::vector<int> tamaños = {20000, 40000, 80000, 120000, 140000, 160000, 180000, 200000};
+    std::vector<int> tamanos = {20000, 40000, 80000, 120000, 140000, 160000, 180000, 200000};
     std::string inDir  = "Datasets/";
     std::string outDir = "Datasets/results/";
 
@@ -126,7 +126,7 @@ int main() {
     double eps = 0.03;
     int    minPts = 10;
 
-    for (int n_points : tamaños) {
+    for (int n_points : tamanos) {
         std::string archivoEntrada = inDir  + std::to_string(n_points) + "_data.csv";
         std::string archivoSalida  = outDir + std::to_string(n_points) + "_results.csv";
 

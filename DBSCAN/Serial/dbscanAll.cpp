@@ -1,19 +1,26 @@
 #include <vector>
 #include <filesystem>
+#include <string>
+#include <cstdio>
+
 namespace fs = std::filesystem;
 
+// Declaraciones que asumo tienes en otros .cpp/.h:
+struct Punto { double x, y; };
+bool leer_csv_xy(const char* path, Punto*& P, int& N);
+int dbscan(Punto* P, int N, double eps, int minPts, int* etiquetas);
+
 int main() {
-    // Lista de tamaños
-    std::vector<int> tamaños = {20000, 40000, 80000, 120000, 140000, 160000, 180000, 200000};
+    // Lista de tamaños (sin ñ)
+    std::vector<int> tamanos = {20000, 40000, 80000, 120000, 140000, 180000, 200000};
 
     std::string carpetaEntrada = "Datasets/";
-    std::string carpetaSalida  = "Datasets results/";
+    std::string carpetaSalida  = "Datasets_results/"; // evita espacios en el path
 
-    // Crear carpeta de resultados si no existe
     if (!fs::exists(carpetaSalida))
         fs::create_directories(carpetaSalida);
 
-    for (int n_points : tamaños) {
+    for (int n_points : tamanos) {
         std::string archivoEntrada = carpetaEntrada + std::to_string(n_points) + "_data.csv";
         std::string archivoSalida  = carpetaSalida  + std::to_string(n_points) + "_results.csv";
 
