@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # === Config ===
-data_csv = "4000_data.csv"      # el MISMO CSV que usó C++
+data_csv = "20000_data.csv"      # el MISMO CSV que usó C++
 eps = 0.03
 min_samples = 10
 img_dir = Path("images"); img_dir.mkdir(exist_ok=True)
@@ -17,7 +17,7 @@ X = np.loadtxt(data_csv, delimiter=",")
 labels = DBSCAN(eps=eps, min_samples=min_samples).fit_predict(X)  # -1 = ruido
 
 # 3) Guardar resultados (x,y,label)
-out_csv = "4000_predicted.csv"
+out_csv = "20000_predicted.csv"
 np.savetxt(out_csv, np.c_[X, labels], delimiter=",", fmt="%.6f")
 print(f"✅ Predicción guardada en: {out_csv}")
 
@@ -27,7 +27,7 @@ plt.figure()
 plt.title("DBSCAN (scikit-learn)")
 plt.scatter(X[:,0], X[:,1], c=colors, s=10)
 plt.xticks([]); plt.yticks([]); plt.box(False)
-out_img = img_dir / "4000_prediction_sklearn.png"
+out_img = img_dir / "2000_prediction_sklearn.png"
 plt.savefig(out_img, dpi=300, bbox_inches="tight")
 plt.close()
 print(f"🖼️ Imagen guardada en: {out_img}")

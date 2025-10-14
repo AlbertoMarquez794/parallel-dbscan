@@ -2,6 +2,10 @@
 #include <cmath>
 #include <fstream>
 #include <string>
+#include <vector>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 // Estados (compatibles con scikit-learn)
 enum {
@@ -91,7 +95,6 @@ int dbscan(Punto puntos[], int n, double eps, int minPts, int etiquetas[]) {
 bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
     std::ifstream in(ruta);
     if (!in.is_open()) return false;
-
     std::string line;
     int cuenta = 0;
     while (std::getline(in, line)) {
@@ -101,7 +104,6 @@ bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
         if (!vacia) ++cuenta;
     }
     in.clear(); in.seekg(0);
-
     puntos = new Punto[cuenta];
     int i = 0; double x,y;
     while (std::getline(in, line)) {
@@ -113,32 +115,47 @@ bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
     return (N > 0);
 }
 
-int main(int argc, char** argv) {
-    // Usa el MISMO CSV que genera tu Python (generate_data.py)
-    const char* archivo = (argc > 1) ? argv[1] : "4000_data.csv";
+// ======= BATCH MAIN =======
+int main() {
+    std::vector<int> tamaños = {20000, 40000, 80000, 120000, 140000, 160000, 180000, 200000};
+    std::string inDir  = "Datasets/";
+    std::string outDir = "Datasets/results/";
 
-    Punto* P = nullptr; int N = 0;
-    if (!leer_csv_xy(archivo, P, N)) {
-        std::fprintf(stderr, "No pude abrir/leer el archivo: %s\n", archivo);
-        return 1;
-    }
+    if (!fs::exists(outDir)) fs::create_directories(outDir);
 
     double eps = 0.03;
     int    minPts = 10;
 
-    int* etiquetas = new int[N];
-    int k = dbscan(P, N, eps, minPts, etiquetas);
-    std::printf("Se encontraron %d clústeres\n", k);
+    for (int n_points : tamaños) {
+        std::string archivoEntrada = inDir  + std::to_string(n_points) + "_data.csv";
+        std::string archivoSalida  = outDir + std::to_string(n_points) + "_results.csv";
 
-    std::string salida = std::to_string(N) + "_results.csv";
-    std::FILE* f = std::fopen(salida.c_str(), "w");
-    if (!f) { std::perror("No se pudo crear el archivo de salida");
-        delete[] etiquetas; delete[] P; return 1; }
-    for (int i = 0; i < N; ++i)
-        std::fprintf(f, "%.6f,%.6f,%d\n", P[i].x, P[i].y, etiquetas[i]);
-    std::fclose(f);
+        Punto* P = nullptr; int N = 0;
+        if (!leer_csv_xy(archivoEntrada.c_str(), P, N)) {
+            std::fprintf(stderr, "❌ No pude leer: %s\n", archivoEntrada.c_str());
+            continue;
+        }
 
-    std::printf("Resultados guardados en %s\n", salida.c_str());
-    delete[] etiquetas; delete[] P;
+        int* etiquetas = new int[N];
+        std::printf("Procesando %s (%d puntos)...\n", archivoEntrada.c_str(), N);
+        int k = dbscan(P, N, eps, minPts, etiquetas);
+        std::printf("✔ Se encontraron %d clústeres\n", k);
+
+        std::FILE* f = std::fopen(archivoSalida.c_str(), "w");
+        if (!f) {
+            std::perror("No se pudo crear el archivo de salida");
+            delete[] etiquetas; delete[] P;
+            continue;
+        }
+        for (int i = 0; i < N; ++i)
+            std::fprintf(f, "%.6f,%.6f,%d\n", P[i].x, P[i].y, etiquetas[i]);
+        std::fclose(f);
+
+        std::printf("💾 %s\n\n", archivoSalida.c_str());
+        delete[] etiquetas;
+        delete[] P;
+    }
+
+    std::printf("✅ Procesamiento completo.\n");
     return 0;
 }
