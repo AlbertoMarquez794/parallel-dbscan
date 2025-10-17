@@ -1,0 +1,2 @@
+n_points,threads,eps,minPts,iteraciones,mean_ms,std_ms
+110005,12,0.03000,10,1,5826.233,0.000

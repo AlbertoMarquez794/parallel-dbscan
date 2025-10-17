@@ -12,7 +12,7 @@ int dbscan(Punto* P, int N, double eps, int minPts, int* etiquetas);
 
 int main() {
     // Lista de tamaños (sin ñ)
-    std::vector<int> tamanos = {20000, 40000, 80000, 120000, 140000, 180000, 200000};
+    std::vector<int> tamanos = {110005};
 
     std::string carpetaEntrada = "Datasets/";
     std::string carpetaSalida  = "Datasets_results/"; // evita espacios en el path

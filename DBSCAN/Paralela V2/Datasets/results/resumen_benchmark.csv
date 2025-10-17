@@ -1,0 +1,2 @@
+Puntos,Epsilon,MinPts,Hilos,Iteraciones,Promedio_ms,StdDev_ms,Min_ms,Max_ms,Clusters_ultima
+110005,0.03000,10,12,1,8610.481,0.000,8610.481,8610.481,2

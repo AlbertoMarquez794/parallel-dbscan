@@ -13,7 +13,7 @@ out_dir    = base_dir / "Serial" / "img" / "cpp"             # a donde guarda la
 out_dir.mkdir(parents=True, exist_ok=True)
 
 # Tamaños / archivos a procesar
-sizes = [20000, 40000, 80000, 120000, 140000, 180000, 200000]
+sizes = [110005]
 
 # Colores: clusters (amarillo) vs ruido (morado)
 cmap = ListedColormap(["#FFD700", "#800080"])
@@ -49,6 +49,6 @@ for n_points in sizes:
     plt.savefig(out_png, dpi=300, bbox_inches="tight")
     plt.close()
 
-    print(f"✅ {n_points}: guardado {out_png}")
+    print(f"{n_points}: guardado {out_png}")
 
-print("🎉 Listo: imágenes en Serial/img/cpp/")
+print("Listo: imágenes en Serial/img/cpp/")

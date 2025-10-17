@@ -9,11 +9,11 @@ from matplotlib.colors import ListedColormap
 # =========================
 base_dir   = Path(__file__).resolve().parent                 # carpeta donde está este script
 in_dir     = base_dir / "Datasets" / "results"               # de donde lee los CSV (######_results.csv)
-out_dir    = base_dir / "Serial" / "img" / "cpp"             # a donde guarda las imágenes
+out_dir    = base_dir / "img" / "cpp"             # a donde guarda las imágenes
 out_dir.mkdir(parents=True, exist_ok=True)
 
 # Tamaños / archivos a procesar
-sizes = [20000, 40000, 80000, 120000, 140000, 180000, 200000]
+sizes = [110005] #, 40000, 80000, 120000, 140000, 180000, 200000]
 
 # Colores: clusters (amarillo) vs ruido (morado)
 cmap = ListedColormap(["#FFD700", "#800080"])
@@ -41,7 +41,7 @@ for n_points in sizes:
     # 2) Graficar
     # =========================
     plt.figure(figsize=(6, 6))
-    plt.title(f"DBSCAN (C++) — {n_points} puntos")
+    plt.title(f"DBSCAN (C++) — a partir de {n_points} puntos")
     # Para grandes N, s pequeño y alpha bajo para rendimiento/legibilidad
     plt.scatter(x, y, c=cidx, cmap=cmap, s=1, alpha=0.8, rasterized=True)
     plt.xticks([]); plt.yticks([]); plt.box(False)
@@ -51,4 +51,4 @@ for n_points in sizes:
 
     print(f"✅ {n_points}: guardado {out_png}")
 
-print("🎉 Listo: imágenes en Serial/img/cpp/")
+print("Imagen generada")

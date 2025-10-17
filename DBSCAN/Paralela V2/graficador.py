@@ -6,7 +6,7 @@ from pathlib import Path
 # =========================
 # Configuración
 # =========================
-n_points = 4000
+n_points = 110005
 base_dir = Path(__file__).resolve().parent
 data_csv = base_dir / f"{n_points}_results.csv"
 img_dir  = base_dir / "images"; img_dir.mkdir(exist_ok=True)

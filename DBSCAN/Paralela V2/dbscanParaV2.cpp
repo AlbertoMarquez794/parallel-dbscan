@@ -1,10 +1,15 @@
+// dbscanParaV1.cpp
 #include <cstdio>
 #include <cmath>
 #include <fstream>
 #include <string>
 #include <cstdlib>
-#include <cstring>   // memcpy
+#include <cstring>
+#include <vector>
+#include <filesystem>
 #include <omp.h>
+
+namespace fs = std::filesystem;
 
 // Estados (compatibles con scikit-learn)
 enum { SIN_CLASIFICAR = -99, RUIDO = -1 };
@@ -17,41 +22,69 @@ inline double distancia2(const Punto& a, const Punto& b) {
 }
 
 // ============================
-// Vecinos dentro de eps (partiendo la "matriz" en 4 bloques de columnas)
+// Vecinos (rango completo [0..n), N hilos, sin std::vector)
+// Fase 1: cada hilo cuenta sus matches en su tramo.
+// Fase 2: cada hilo escribe en 'out' usando offsets (sin contención).
 // ============================
-int buscar_vecinos(Punto puntos[], int n, int idx, double eps2, int out[]) {
-    const int B = 4;                 // número de bloques
-    int* tmp[B];                     // buffers por bloque
-    int  cnt[B] = {0,0,0,0};         // conteo por bloque
+int buscar_vecinos(Punto* __restrict puntos, int n, int idx,
+                   double eps2, int* __restrict out) {
+    const int T = omp_get_max_threads();   // número de hilos efectivos
 
-    for (int b = 0; b < B; ++b) tmp[b] = new int[n];  // peor caso: todos son vecinos
-
-    // Procesa 4 bloques (columnas) en paralelo, sin escribir en 'out' aún
-    #pragma omp parallel for num_threads(4)
-    for (int b = 0; b < B; ++b) {
-        int start = (b * n) / B;
-        int end   = ((b + 1) * n) / B;
+    if (T <= 1) {
+        // Fallback secuencial
         int c = 0;
-        for (int j = start; j < end; ++j) {
+        for (int j = 0; j < n; ++j) {
             double dx = puntos[idx].x - puntos[j].x;
             double dy = puntos[idx].y - puntos[j].y;
-            if (dx*dx + dy*dy <= eps2) tmp[b][c++] = j;
+            if (dx*dx + dy*dy <= eps2) out[c++] = j;
         }
-        cnt[b] = c;
+        return c;
     }
 
-    // Fusionar en orden de bloques para conservar un orden determinista
-    int total = 0;
-    for (int b = 0; b < B; ++b) {
-        std::memcpy(out + total, tmp[b], cnt[b] * sizeof(int));
-        total += cnt[b];
-        delete[] tmp[b];
+    // --- Fase 1: conteo por hilo ---
+    int* counts = new int[T];
+    for (int t = 0; t < T; ++t) counts[t] = 0;
+
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        int local = 0;
+
+        #pragma omp for schedule(static) nowait
+        for (int j = 0; j < n; ++j) {
+            double dx = puntos[idx].x - puntos[j].x;
+            double dy = puntos[idx].y - puntos[j].y;
+            if (dx*dx + dy*dy <= eps2) ++local;
+        }
+        counts[tid] = local;
     }
+
+    // --- Fase 2: calcular offsets (prefijos) ---
+    int* offs = new int[T];
+    int total = 0;
+    for (int t = 0; t < T; ++t) { offs[t] = total; total += counts[t]; }
+
+    // --- Fase 3: escribir en 'out' sin contención ---
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        int pos = offs[tid];
+
+        #pragma omp for schedule(static) nowait
+        for (int j = 0; j < n; ++j) {
+            double dx = puntos[idx].x - puntos[j].x;
+            double dy = puntos[idx].y - puntos[j].y;
+            if (dx*dx + dy*dy <= eps2) out[pos++] = j;
+        }
+    }
+
+    delete[] counts;
+    delete[] offs;
     return total;
 }
 
 // ============================
-// Expansión de clúster (igual que serial)
+// Expansión de clúster
 // ============================
 int expandir_cluster(Punto puntos[], int n, int idxCore, int idCluster,
                      double eps2, int minPts, int etiquetas[]) {
@@ -97,29 +130,24 @@ int expandir_cluster(Punto puntos[], int n, int idxCore, int idCluster,
 }
 
 // ============================
-// DBSCAN (igual que tu versión paralela segura)
+// DBSCAN principal
 // ============================
 int dbscan(Punto puntos[], int n, double eps, int minPts, int etiquetas[]) {
     for (int i = 0; i < n; ++i) etiquetas[i] = SIN_CLASIFICAR;
+
     double eps2 = eps * eps;
     int idCluster = 0;
 
-    #pragma omp parallel
-    {
-        #pragma omp single
-        {
-            for (int i = 0; i < n; ++i) {
-                if (etiquetas[i] != SIN_CLASIFICAR) continue;
-                if (expandir_cluster(puntos, n, i, idCluster, eps2, minPts, etiquetas))
-                    ++idCluster;
-            }
-        }
+    for (int i = 0; i < n; ++i) {
+        if (etiquetas[i] != SIN_CLASIFICAR) continue;
+        if (expandir_cluster(puntos, n, i, idCluster, eps2, minPts, etiquetas))
+            ++idCluster;
     }
     return idCluster;
 }
 
 // ============================
-// Lectura CSV (igual que serial)
+// Lectura CSV (x,y)
 // ============================
 bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
     std::ifstream in(ruta);
@@ -148,42 +176,77 @@ bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
 }
 
 // ============================
-// MAIN
+// MAIN batch (procesa todos los tamaños conocidos)
+// Uso: ./dbscanParaV1 <hilos> [eps] [minPts] [baseIn]
 // ============================
 int main(int argc, char** argv) {
-    const char* archivo = (argc > 1) ? argv[1] : "4000_data.csv";
-    int num_hilos = (argc > 2) ? std::atoi(argv[2]) : omp_get_max_threads();
+    std::vector<int> tamanos = {110005};
+
+    std::string baseIn  = (argc > 4)
+        ? std::string(argv[4])
+        : "/home/alberto/parallel-dbscan/DBSCAN/Paralela V2/Datasets/";
+    if (baseIn.back() != '/' && baseIn.back() != '\\') baseIn += '/';
+
+    std::string baseOut = baseIn + "results/";
+
+    int num_hilos = (argc > 1) ? std::atoi(argv[1]) : omp_get_max_threads();
+    double eps    = (argc > 2) ? std::atof(argv[2]) : 0.03;
+    int    minPts = (argc > 3) ? std::atoi(argv[3]) : 10;
+
     omp_set_num_threads(num_hilos);
 
-    Punto* P = nullptr; int N = 0;
-    if (!leer_csv_xy(archivo, P, N)) {
-        std::fprintf(stderr, "No pude abrir/leer el archivo: %s\n", archivo);
-        return 1;
+    if (!fs::exists(baseOut)) {
+        if (!fs::create_directories(baseOut)) {
+            std::fprintf(stderr, "No se pudo crear el directorio de salida: %s\n", baseOut.c_str());
+            return 1;
+        }
     }
 
-    double eps = 0.03;
-    int minPts = 10;
+    std::printf("=== DBSCAN paralelo (rango completo) ===\n");
+    std::printf("Usando %d hilos | eps = %.5f | minPts = %d\n", num_hilos, eps, minPts);
+    std::printf("Entrada: %s\nSalida:  %s\n", baseIn.c_str(), baseOut.c_str());
 
-    std::printf("Usando %d hilos (OpenMP)\n", num_hilos);
-    std::printf("N = %d, eps = %.5f, minPts = %d\n", N, eps, minPts);
+    for (int N : tamanos) {
+        std::string input  = baseIn  + std::to_string(N) + "_data.csv";
+        std::string output = baseOut + std::to_string(N) + "_results_" + std::to_string(num_hilos) + ".csv";
 
-    int* etiquetas = new int[N];
-    int k = dbscan(P, N, eps, minPts, etiquetas);
-    std::printf("Se encontraron %d clústeres\n", k);
+        if (!fs::exists(input)) {
+            std::fprintf(stderr, "⚠️  No existe: %s\n", input.c_str());
+            continue;
+        }
 
-    std::FILE* f = std::fopen("resultados.csv", "w");
-    if (!f) {
-        std::perror("No se pudo crear el archivo de salida");
-        delete[] etiquetas; delete[] P;
-        return 1;
+        Punto* P = nullptr; int n = 0;
+        if (!leer_csv_xy(input.c_str(), P, n)) {
+            std::fprintf(stderr, "❌ No pude leer/parsing: %s\n", input.c_str());
+            continue;
+        }
+
+        std::printf("\n📂 Procesando %s (%d puntos)...\n", input.c_str(), n);
+
+        int* etiquetas = new int[n];
+        double t0 = omp_get_wtime();
+        int k = dbscan(P, n, eps, minPts, etiquetas);
+        double t1 = omp_get_wtime();
+
+        std::printf("✔ Clústeres: %d | Tiempo: %.3f ms\n", k, (t1 - t0)*1000.0);
+
+        std::FILE* f = std::fopen(output.c_str(), "w");
+        if (!f) {
+            std::perror("No se pudo crear el archivo de salida");
+            delete[] etiquetas; delete[] P;
+            continue;
+        }
+
+        for (int i = 0; i < n; ++i)
+            std::fprintf(f, "%.6f,%.6f,%d\n", P[i].x, P[i].y, etiquetas[i]);
+        std::fclose(f);
+
+        std::printf("💾 Guardado → %s\n", output.c_str());
+
+        delete[] etiquetas;
+        delete[] P;
     }
-    for (int i = 0; i < N; ++i)
-        std::fprintf(f, "%.6f,%.6f,%d\n", P[i].x, P[i].y, etiquetas[i]);
-    std::fclose(f);
 
-    std::printf("Resultados guardados en resultados.csv\n");
-
-    delete[] etiquetas;
-    delete[] P;
+    std::printf("\n✅ Procesamiento completo para todos los tamaños.\n");
     return 0;
 }

@@ -1,10 +1,12 @@
-// dbscan_parallel_batch.cpp
+// dbscan_parallel.cpp
 #include <cstdio>
 #include <cmath>
 #include <fstream>
+#include <filesystem>
 #include <string>
 #include <cstdlib>
-#include <filesystem>
+#include <vector>
+#include <cstring>   // memcpy
 #include <omp.h>
 
 namespace fs = std::filesystem;
@@ -20,51 +22,84 @@ inline double distancia2(const Punto& a, const Punto& b) {
 }
 
 // ============================
-// Vecinos dentro de eps (PARALELO, 2 fases, sin std::vector)
+// Vecinos (2 mitades, N hilos, sin std::vector)
+// Fase 1: cada hilo cuenta vecinos en su porción de cada mitad.
+// Fase 2: cada hilo escribe en 'out' con offsets (sin contención).
+// Orden final determinista: [mitad0 | mitad1].
 // ============================
 int buscar_vecinos(Punto puntos[], int n, int idx, double eps2, int out[]) {
-    const int T = omp_get_max_threads();
-    int* counts  = new int[T];
-    for (int t = 0; t < T; ++t) counts[t] = 0;
+    const int T = omp_get_max_threads();   // hilos efectivos (respeta omp_set_num_threads)
+    const int mid = n / 2;
+
+    // --- Fase 1: conteo por hilo en cada mitad ---
+    int* counts0 = new int[T];  // mitad 0
+    int* counts1 = new int[T];  // mitad 1
+    for (int t = 0; t < T; ++t) counts0[t] = counts1[t] = 0;
 
     #pragma omp parallel
     {
-        const int tid = omp_get_thread_num();
-        int local = 0;
+        int tid = omp_get_thread_num();
+        int c0 = 0, c1 = 0;
 
+        // Mitad 0: [0, mid)
         #pragma omp for schedule(static) nowait
-        for (int j = 0; j < n; ++j) {
+        for (int j = 0; j < mid; ++j) {
             double dx = puntos[idx].x - puntos[j].x;
             double dy = puntos[idx].y - puntos[j].y;
-            if (dx*dx + dy*dy <= eps2) ++local;
+            if (dx*dx + dy*dy <= eps2) ++c0;
         }
-        counts[tid] = local;
+
+        // Mitad 1: [mid, n)
+        #pragma omp for schedule(static)
+        for (int j = mid; j < n; ++j) {
+            double dx = puntos[idx].x - puntos[j].x;
+            double dy = puntos[idx].y - puntos[j].y;
+            if (dx*dx + dy*dy <= eps2) ++c1;
+        }
+
+        counts0[tid] = c0;
+        counts1[tid] = c1;
     }
 
-    int* offsets = new int[T];
-    int total = 0;
-    for (int t = 0; t < T; ++t) { offsets[t] = total; total += counts[t]; }
+    // Prefijos (offsets) para escribir sin contención
+    int* offs0 = new int[T];
+    int* offs1 = new int[T];
+    int total0 = 0, total1 = 0;
+    for (int t = 0; t < T; ++t) { offs0[t] = total0; total0 += counts0[t]; }
+    for (int t = 0; t < T; ++t) { offs1[t] = total1; total1 += counts1[t]; }
+    const int base1 = total0;  // mitad 1 inicia después de mitad 0
 
+    // --- Fase 2: escritura en 'out' usando offsets ---
     #pragma omp parallel
     {
-        const int tid = omp_get_thread_num();
-        int pos = offsets[tid];
+        int tid = omp_get_thread_num();
+        int pos0 = offs0[tid];
 
+        // Mitad 0
         #pragma omp for schedule(static) nowait
-        for (int j = 0; j < n; ++j) {
+        for (int j = 0; j < mid; ++j) {
             double dx = puntos[idx].x - puntos[j].x;
             double dy = puntos[idx].y - puntos[j].y;
-            if (dx*dx + dy*dy <= eps2) out[pos++] = j;
+            if (dx*dx + dy*dy <= eps2) out[pos0++] = j;
+        }
+
+        int pos1 = base1 + offs1[tid];
+
+        // Mitad 1
+        #pragma omp for schedule(static)
+        for (int j = mid; j < n; ++j) {
+            double dx = puntos[idx].x - puntos[j].x;
+            double dy = puntos[idx].y - puntos[j].y;
+            if (dx*dx + dy*dy <= eps2) out[pos1++] = j;
         }
     }
 
-    delete[] counts;
-    delete[] offsets;
-    return total;
+    delete[] counts0; delete[] counts1; delete[] offs0; delete[] offs1;
+    return total0 + total1;
 }
 
 // ============================
-// Expansión de clúster (misma estructura que serial)
+// Expansión de clúster (igual estructura que serial)
 // ============================
 int expandir_cluster(Punto puntos[], int n, int idxCore, int idCluster,
                      double eps2, int minPts, int etiquetas[]) {
@@ -110,14 +145,15 @@ int expandir_cluster(Punto puntos[], int n, int idxCore, int idCluster,
 }
 
 // ============================
-// DBSCAN (misma estructura; vecindad ya paralela)
+// DBSCAN (estructura serial; vecindad paralela)
 // ============================
 int dbscan(Punto puntos[], int n, double eps, int minPts, int etiquetas[]) {
     for (int i = 0; i < n; ++i) etiquetas[i] = SIN_CLASIFICAR;
 
     double eps2 = eps * eps;
-    int idCluster = 0;
+    int idCluster = 0; // 0,1,2,...
 
+    // Recorrido serial de semillas; la parte pesada (vecindad) va paralela
     for (int i = 0; i < n; ++i) {
         if (etiquetas[i] != SIN_CLASIFICAR) continue;
         if (expandir_cluster(puntos, n, i, idCluster, eps2, minPts, etiquetas))
@@ -127,12 +163,14 @@ int dbscan(Punto puntos[], int n, double eps, int minPts, int etiquetas[]) {
 }
 
 // ============================
-// Lectura CSV x,y
+// Lectura CSV simple x,y
 // ============================
-bool leer_csv_xy(const fs::path& ruta, Punto*& puntos, int& N) {
+bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
     std::ifstream in(ruta);
-    if (!in.is_open()) return false;
-
+    if (!in.is_open()) {
+        std::perror(("fopen fallo en '" + std::string(ruta) + "'").c_str());
+        return false;
+    }
     std::string line;
     int cuenta = 0;
     while (std::getline(in, line)) {
@@ -152,77 +190,90 @@ bool leer_csv_xy(const fs::path& ruta, Punto*& puntos, int& N) {
             puntos[i++] = {x,y};
     }
     in.close(); N = i;
-    return (N > 0);
-}
-
-// ============================
-// Guardar resultados x,y,label
-// ============================
-bool guardar_csv(const fs::path& ruta, const Punto* P, const int* etiquetas, int N) {
-    std::FILE* f = std::fopen(ruta.string().c_str(), "w");
-    if (!f) return false;
-    for (int i = 0; i < N; ++i)
-        std::fprintf(f, "%.6f,%.6f,%d\n", P[i].x, P[i].y, etiquetas[i]);
-    std::fclose(f);
+    if (N == 0) {
+        std::fprintf(stderr, "leer_csv_xy: archivo '%s' abrió OK pero no se parseó ninguna fila\n", ruta);
+        return false;
+    }
     return true;
 }
 
+
 // ============================
 // MAIN
-// Uso: ./dbscan_parallel_batch "<inDir>" "<outDir>" <hilos> [eps] [minPts]
-//
-// Ejemplo:
-// ./dbscan_parallel_batch "/home/.../Paralela V1/Datasets" "/home/.../Paralela V1/Results_8h" 8 0.03 10
+// Uso: ./dbscan_parallel <input.csv> <num_hilos> [eps] [minPts]
 // ============================
 int main(int argc, char** argv) {
-    if (argc < 4) {
-        std::fprintf(stderr,
-            "Uso: %s <inDir> <outDir> <hilos> [eps] [minPts]\n", argv[0]);
-        return 1;
-    }
-    fs::path inDir  = fs::path(argv[1]);
-    fs::path outDir = fs::path(argv[2]);
-    int num_hilos   = std::atoi(argv[3]);
-    double eps      = (argc > 4) ? std::atof(argv[4]) : 0.03;
-    int    minPts   = (argc > 5) ? std::atoi(argv[5]) : 10;
+    // --- Configuración ---
+    std::vector<int> tamanos = {110005};
+
+    // baseIn por CLI opcional (arg4). Si no se da, usa la ruta por defecto:
+    // ./dbscanParaV1 <hilos> [eps] [minPts] [baseIn]
+    std::string baseIn  = (argc > 4)
+        ? std::string(argv[4])
+        : "/home/albertomarquez/parallel-dbscan/DBSCAN/Paralela V1/Datasets/";
+    if (baseIn.back() != '/' && baseIn.back() != '\\') baseIn += '/';
+
+    std::string baseOut = baseIn + "results/";
+
+    int num_hilos = (argc > 1) ? std::atoi(argv[1]) : omp_get_max_threads();
+    double eps    = (argc > 2) ? std::atof(argv[2]) : 0.03;
+    int    minPts = (argc > 3) ? std::atoi(argv[3]) : 10;
 
     omp_set_num_threads(num_hilos);
-    fs::create_directories(outDir);
 
-    // Tamaños fijos solicitados
-    const int sizes[] = {20000, 40000, 80000, 120000, 140000, 160000, 180000, 200000};
-    const int NSIZES  = sizeof(sizes)/sizeof(sizes[0]);
+    // Crear carpeta de salida (si no existe)
+    if (!fs::exists(baseOut)) {
+        if (!fs::create_directories(baseOut)) {
+            std::fprintf(stderr, "No se pudo crear el directorio de salida: %s\n", baseOut.c_str());
+            return 1;
+        }
+    }
 
-    for (int idx = 0; idx < NSIZES; ++idx) {
-        int npts = sizes[idx];
-        fs::path inFile  = inDir  / (std::to_string(npts) + "_data.csv");
-        fs::path outFile = outDir / (std::to_string(npts) + "_results_" + std::to_string(num_hilos) + ".csv");
+    std::printf("=== DBSCAN paralelo (matriz dividida en 2) ===\n");
+    std::printf("Usando %d hilos | eps = %.5f | minPts = %d\n", num_hilos, eps, minPts);
+    std::printf("Entrada: %s\nSalida:  %s\n", baseIn.c_str(), baseOut.c_str());
 
-        Punto* P = nullptr; int N = 0;
-        if (!leer_csv_xy(inFile, P, N)) {
-            std::fprintf(stderr, "❌ No pude leer %s\n", inFile.string().c_str());
+    for (int N : tamanos) {
+        std::string input  = baseIn  + std::to_string(N) + "_data.csv";
+        std::string output = baseOut + std::to_string(N) + "_results_" + std::to_string(num_hilos) + ".csv";
+
+        // Verifica existencia antes de leer
+        if (!fs::exists(input)) {
+            std::fprintf(stderr, "⚠️  No existe: %s\n", input.c_str());
             continue;
         }
 
-        int* etiquetas = new int[N];
+        Punto* P = nullptr; int n = 0;
+        if (!leer_csv_xy(input.c_str(), P, n)) {
+            std::fprintf(stderr, "❌ No pude leer/parsing: %s\n", input.c_str());
+            continue;
+        }
 
+        std::printf("\n📂 Procesando %s (%d puntos)...\n", input.c_str(), n);
+
+        int* etiquetas = new int[n];
         double t0 = omp_get_wtime();
-        int k = dbscan(P, N, eps, minPts, etiquetas);
+        int k = dbscan(P, n, eps, minPts, etiquetas);
         double t1 = omp_get_wtime();
 
-        std::printf("N=%d | hilos=%d | eps=%.3f | minPts=%d | clusters=%d | tiempo=%.2f ms\n",
-                    N, num_hilos, eps, minPts, k, (t1 - t0)*1000.0);
+        std::printf("✔ Clústeres: %d | Tiempo: %.3f ms\n", k, (t1 - t0) * 1000.0);
 
-        if (!guardar_csv(outFile, P, etiquetas, N)) {
-            std::fprintf(stderr, "⚠️  No se pudo escribir %s\n", outFile.string().c_str());
-        } else {
-            std::printf("💾 %s\n", outFile.string().c_str());
+        std::FILE* f = std::fopen(output.c_str(), "w");
+        if (!f) {
+            std::perror("No se pudo crear el archivo de salida");
+            delete[] etiquetas; delete[] P;
+            continue;
         }
+        for (int i = 0; i < n; ++i)
+            std::fprintf(f, "%.6f,%.6f,%d\n", P[i].x, P[i].y, etiquetas[i]);
+        std::fclose(f);
+
+        std::printf("💾 Guardado → %s\n", output.c_str());
 
         delete[] etiquetas;
         delete[] P;
     }
 
-    std::puts("✅ Lote completado.");
+    std::printf("\n✅ Procesamiento completo para todos los tamaños.\n");
     return 0;
 }

@@ -24,7 +24,7 @@ print(f"✅ Predicción guardada en: {out_csv}")
 # 4) Graficar y guardar imagen
 colors = np.where(labels == -1, "#800080", "#FFD700")  # ruido morado, clusters amarillo
 plt.figure()
-plt.title("DBSCAN (scikit-learn)")
+plt.title("DBSCAN (con mi algoritmo de CPP)")
 plt.scatter(X[:,0], X[:,1], c=colors, s=10)
 plt.xticks([]); plt.yticks([]); plt.box(False)
 out_img = img_dir / "4000_prediction_sklearn.png"

@@ -117,7 +117,7 @@ bool leer_csv_xy(const char* ruta, Punto*& puntos, int& N) {
 
 // ======= BATCH MAIN =======
 int main() {
-    std::vector<int> tamanos = {20000, 40000, 80000, 120000, 140000, 160000, 180000, 200000};
+    std::vector<int> tamanos = {110005};
     std::string inDir  = "Datasets/";
     std::string outDir = "Datasets/results/";
 
